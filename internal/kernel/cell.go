@@ -9,11 +9,39 @@ import (
 	"go-prime-agent/internal/proto"
 )
 
+// pythonBootstrapMarks identify the stock host's Python bootstrap cell by
+// construction (RLM_BOOTSTRAP_HEADER_CODE in prime-agent's ipython tool).
+var pythonBootstrapMarks = [2]string{
+	"import asyncio",
+	`_prime_agent_os.environ[`,
+}
+
+// looksLikePythonBootstrap reports whether code is the stock host's Python
+// bootstrap cell.
+func looksLikePythonBootstrap(code string) bool {
+	trimmed := strings.TrimSpace(code)
+	for _, m := range pythonBootstrapMarks {
+		if !strings.Contains(trimmed, m) {
+			return false
+		}
+	}
+	return strings.HasPrefix(trimmed, pythonBootstrapMarks[0])
+}
+
 // runCell evaluates one execute request and maps the outcome to protocol
 // events: result on success-with-value, KeyboardInterrupt on cancellation,
 // Error otherwise, then exactly one done (spec: Events).
 func (k *Kernel) runCell(w work) {
 	req := w.req
+	// Fork-integration affordance (GORLM_ACK_PYTHON_BOOTSTRAP): the stock
+	// host bootstraps kernels with a Python cell (rlm, bash, skills). A Go
+	// kernel cannot run it; ack it so the host sees a provisioned namespace.
+	// The fork's host sends a Go bootstrap instead and this becomes dead.
+	if k.cfg.AckPythonBootstrap && looksLikePythonBootstrap(req.Code) {
+		k.attributedStdout(req.ID)("go kernel: python bootstrap acked (not evaluated)")
+		k.done(req.ID, proto.StatusOK, nil)
+		return
+	}
 	env := eval.Env{
 		Ctx:     w.ctx,
 		RootCtx: k.rootCtx,

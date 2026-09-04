@@ -79,4 +79,9 @@ Cell language specifics:
 - [x] Typed subagent client (`internal/agents`: Spawn/Send/ListAgents)
 - [ ] MCP client; subagent replies as channels (needs host fork / v4 `deliver`)
 - [ ] Interpreter-state snapshot (currently name markers only)
-- [ ] `ensureKernelPython` → static binary bootstrap on the host side
+- [x] Stock-host integration verified: `PRIME_AGENT_KERNEL_PYTHON` points at
+      a shim that execs gorlm (host `-c` probes pass), `GORLM_ACK_PYTHON_BOOTSTRAP=1`
+      acks the Python bootstrap cell, and a real glm-5.2 round-trip through the
+      unpatched harness executed Go cells with persistent state.
+- [ ] Fork the host: Go bootstrap cell, Go-oriented system prompt, gorlm as
+      the default kernel (drop shim + ack)

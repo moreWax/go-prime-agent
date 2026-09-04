@@ -3,9 +3,12 @@ package kernel_test
 import (
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"go-prime-agent/internal/eval"
+	"go-prime-agent/internal/kernel"
 	"go-prime-agent/internal/proto"
 	"go-prime-agent/internal/testutil"
 )
@@ -42,7 +45,6 @@ func TestConcurrentHostRequests(t *testing.T) {
 	h := testutil.NewHarness(t, nil)
 	ready(t, h)
 
-	// Reply slowest-first so completion order differs from request order.
 	var delay time.Duration
 	h.HostAutoReplier(func(kind string, payload any) (json.RawMessage, error) {
 		delay += 50 * time.Millisecond
@@ -149,6 +151,44 @@ func TestSnapshotRestore(t *testing.T) {
 		t.Fatalf("missing snapshot done: %+v", e)
 	}
 }
+
+// The Python-bootstrap ack path provisions the kernel without evaluating
+// the bootstrap; normal cells still evaluate.
+func TestAckPythonBootstrap(t *testing.T) {
+	ev := &countingEvaluator{}
+	h := testutil.NewHarness(t, func(c *kernel.Config) {
+		c.Eval = ev
+		c.AckPythonBootstrap = true
+	})
+	ready(t, h)
+
+	boot := "import asyncio\nimport os as _prime_agent_os\n_prime_agent_os.environ[\"NO_COLOR\"] = \"1\""
+	h.SendReq(map[string]any{"type": "execute", "id": "boot", "code": boot})
+	if e, _ := h.WantDone("boot", 2*time.Second); e.Status != proto.StatusOK {
+		t.Fatalf("bootstrap ack: %+v", e)
+	}
+	if n := ev.calls(); n != 0 {
+		t.Fatalf("evaluator ran %d times for acked bootstrap", n)
+	}
+
+	h.SendReq(map[string]any{"type": "execute", "id": "c", "code": "set:k v"})
+	if e, _ := h.WantDone("c", 2*time.Second); e.Status != proto.StatusOK {
+		t.Fatalf("post-bootstrap cell: %+v", e)
+	}
+	if n := ev.calls(); n != 1 {
+		t.Fatalf("expected 1 evaluation after bootstrap, got %d", n)
+	}
+}
+
+// countingEvaluator delegates to the op DSL and counts calls.
+type countingEvaluator struct{ n atomic.Int32 }
+
+func (c *countingEvaluator) Run(env eval.Env) (eval.Result, error) {
+	c.n.Add(1)
+	return eval.Run(env)
+}
+
+func (c *countingEvaluator) calls() int { return int(c.n.Load()) }
 
 func contains(xs []string, v string) bool {
 	for _, x := range xs {

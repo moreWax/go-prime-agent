@@ -42,6 +42,10 @@ type Config struct {
 	Out io.Writer // private dup of original stdout
 	// Eval executes cells. nil => the op-DSL stub.
 	Eval Evaluator
+	// AckPythonBootstrap acks the stock host's Python bootstrap cell with
+	// done:ok instead of evaluating it (fork-integration affordance; see
+	// cell.go).
+	AckPythonBootstrap bool
 }
 
 type work struct {
