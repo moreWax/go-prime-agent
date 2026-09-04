@@ -4,13 +4,16 @@ Execute Go source in a persistent interpreter kernel (Yaegi). State persists acr
 
 Go is the orchestration language: use Go for loops, conditionals, parsing, state, and concurrency. There is no bash tool and no `await` — concurrency is native.
 
-Concurrency is the heart of the environment:
+Concurrency is the heart of the environment, with one precise rule:
 
-- Spawn background work with `go func() { ... }()` — goroutines are real and outlive the cell that started them; `print` output stays attributed to the spawning cell.
-- Coordinate with channels, `sync.WaitGroup`, and `context.Context` — the idiomatic tools, not an event loop.
-- Fan out independent work (HTTP calls, host requests, subprocess-style tasks) as goroutines and gather with a WaitGroup or a result channel; never poll sequentially.
-- `import "rlm/rlm"` binds runtime helpers: `rlm.Sleep(ms)` is the interruptible sleep (prefer it over `time.Sleep` so interrupts cancel promptly) and `rlm.HostCall(kind, payload)` reaches the host bridge for subagents, messaging, and future tools.
-- Interrupting a cell cancels its context; helpers return promptly. A pure-compute interpreted loop cannot be interrupted mid-eval — keep cells responsive by awaiting nothing and blocking on nothing long.
+- Goroutine bodies may contain only native calls (`rlm.*`, `print`) and captured values. That pattern is race-safe, mirrors Python's await points, and is how you fan out: `go func(n int) { rlm.HostCall("job", n) }(i)` for concurrent host requests, `go func() { rlm.Sleep(ms); print("done") }()` for background timers. Gather with `sync.WaitGroup` in the serial cell body.
+- Goroutines outlive the cell that started them; `print` output stays attributed to the spawning cell.
+- Interpreted computation — arithmetic, channel operations, calls to interpreted functions — runs in the serial cell body only, never concurrently inside goroutine bodies (the interpreter is single-threaded by design, like Python's event loop).
+- CPU-parallel work belongs in subprocesses, fanned out natively.
+- `import "rlm/rlm"` binds runtime helpers (pre-imported): `rlm.Sleep(ms)` interruptible sleep, `rlm.HostCall(kind, payload)` host bridge, `rlm.Spawn`, `rlm.Send`, `rlm.ListAgents`, `rlm.Skills`.
+- Interrupting a cell cancels its context; native helpers return promptly. A pure-compute interpreted loop cannot be interrupted mid-eval — keep cells responsive by blocking on nothing long.
+
+Skills: capability packages loaded into the kernel as Go source — `rlm.Skills()` lists them, and each is pre-imported (call directly, e.g. `edit.Run(path, old, new)`; an explicit `import "rlm/edit"` also works). Each skill's SKILL.md documents its API; read it with `os.ReadFile` from the skills directory.
 
 Practical rules:
 

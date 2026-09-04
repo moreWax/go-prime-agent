@@ -2,6 +2,7 @@ package rlm_test
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -135,5 +136,46 @@ go func() {
 		case <-deadline:
 			t.Fatal("background goroutine output never arrived")
 		}
+	}
+}
+
+// Skills load as importable Go packages; imports are idempotent across
+// cells; skill concurrency (goroutine fan-out) works inside packages.
+func TestGoSkills(t *testing.T) {
+	skillsDir := t.TempDir()
+	greet := skillsDir + "/greet"
+	os.MkdirAll(greet, 0o755)
+	os.WriteFile(greet+"/skill.go", []byte("package greet\n\nfunc Hello(name string) string { return \"hello, \" + name }\n"), 0o644)
+
+	h := testutil.NewHarness(t, func(c *rlm.Config) { c.Eval = rlm.NewGoEvaluatorWithSkills(skillsDir) })
+	if e := h.Await(2 * time.Second); e.Event != rlm.KindReady {
+		t.Fatalf("ready: %+v", e)
+	}
+
+	e, mid := exec(t, h, "skills", `rlm.Skills()`)
+	if e.Status != rlm.StatusOK {
+		t.Fatalf("skills: %+v %+v", e, mid)
+	}
+	if r := testutil.FindResult(mid); r == nil || *r != "[greet]" {
+		t.Fatalf("skills result: %v", r)
+	}
+
+	e, mid = exec(t, h, "use", `import "rlm/greet"
+greet.Hello("skills")`)
+	if e.Status != rlm.StatusOK {
+		t.Fatalf("use: %+v %+v", e, mid)
+	}
+	if r := testutil.FindResult(mid); r == nil || *r != "hello, skills" {
+		t.Fatalf("greet result: %v", r)
+	}
+
+	// Re-import across cells is idempotent.
+	e, mid = exec(t, h, "again", `import "rlm/greet"
+greet.Hello("again")`)
+	if e.Status != rlm.StatusOK {
+		t.Fatalf("again: %+v %+v", e, mid)
+	}
+	if r := testutil.FindResult(mid); r == nil || *r != "hello, again" {
+		t.Fatalf("greet again result: %v", r)
 	}
 }

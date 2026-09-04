@@ -43,6 +43,22 @@ mutex it could wait on a channel for.
 | `sys.stdout` interception | attributed writer port passed to cells |
 | pre-imported Python skills | Go CLI skills (static binaries) + markdown skills |
 
+## Interpreter concurrency contract (measured)
+
+Yaegi v0.16 races when interpreted statements execute concurrently
+(closure-invocation machinery). Measured under `-race -count=10`:
+
+- goroutine bodies with **native calls only** (`rlm.HostCall`, `rlm.Sleep`,
+  `print`): clean — this is the supported fan-out pattern, the Go
+  equivalent of Python's await points
+- any concurrent **interpreted** execution (compute, channel sends, calls
+  to interpreted functions): data race — forbidden by contract
+
+So: concurrency lives at kernel layers, native helpers, and subprocesses;
+interpretation is single-threaded, exactly like the Python runtime's event
+loop. The contract file (`contract/go.md`) teaches the rule; the greet
+skill's SKILL.md documents it for skill authors.
+
 ## Package shape: faithful port of prime-agent-runtime
 
 The Go runtime mirrors the Python runtime's flat `rlm` package

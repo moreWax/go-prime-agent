@@ -33,6 +33,7 @@ type GoEvaluator struct {
 	mu       sync.Mutex
 	i        *interp.Interpreter
 	imported map[string]bool // package import paths already bound
+	skills   []SkillInfo     // loaded Go skills (import "rlm/<name>")
 
 	// per-cell slots, guarded by mu
 	ctx  context.Context
@@ -57,9 +58,20 @@ func (w outWriter) Write(p []byte) (int, error) {
 
 var _ io.Writer = outWriter{}
 
-func NewGoEvaluator() *GoEvaluator {
+// NewGoEvaluator returns an evaluator with no skills loaded.
+func NewGoEvaluator() *GoEvaluator { return newGoEvaluator("") }
+
+// NewGoEvaluatorWithSkills loads Go skills from dir (see skill.go).
+func NewGoEvaluatorWithSkills(dir string) *GoEvaluator { return newGoEvaluator(dir) }
+
+func newGoEvaluator(skillsDir string) *GoEvaluator {
 	e := &GoEvaluator{ctx: context.Background(), imported: make(map[string]bool)}
-	e.i = interp.New(interp.Options{Stdout: outWriter{e}})
+	o := interp.Options{Stdout: outWriter{e}}
+	if gp, skills, err := PrepareSkillGoPath(skillsDir); err == nil && gp != "" {
+		o.GoPath = gp
+		e.skills = skills
+	}
+	e.i = interp.New(o)
 	e.i.Use(stdlib.Symbols)
 
 	// Cells import "rlm/rlm" for runtime-bound helpers (qualifier rlm).
@@ -106,7 +118,18 @@ func NewGoEvaluator() *GoEvaluator {
 				_, err := host(ctx, "agent_message", map[string]any{
 					"receiver_role": role, "receiver_name": name, "message": message,
 				})
+
 				return err
+			}),
+			// Skills lists loaded Go skills (import "rlm/<name>").
+			"Skills": reflect.ValueOf(func() []string {
+				e.mu.Lock()
+				defer e.mu.Unlock()
+				out := make([]string, 0, len(e.skills))
+				for _, s := range e.skills {
+					out = append(out, s.Name)
+				}
+				return out
 			}),
 			// ListAgents returns the family roster.
 			"ListAgents": reflect.ValueOf(func() []map[string]any {
@@ -123,6 +146,20 @@ func NewGoEvaluator() *GoEvaluator {
 			}),
 		},
 	})
+	// Pre-import the runtime helpers and every skill (Python parity: `rlm`
+	// and skill modules are already in the namespace, no import needed).
+	// Skills that fail to interpret are dropped, not fatal.
+	if _, err := e.i.Eval(`import "rlm/rlm"`); err == nil {
+		e.imported["rlm/rlm"] = true
+	}
+	live := e.skills[:0]
+	for _, sk := range e.skills {
+		if _, err := e.i.Eval("import \"rlm/" + sk.Name + "\""); err == nil {
+			e.imported["rlm/"+sk.Name] = true
+			live = append(live, sk)
+		}
+	}
+	e.skills = live
 	return e
 }
 
