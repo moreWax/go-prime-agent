@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"go-prime-agent/internal/hostbridge"
+	"github.com/xor/go-prime-agent/internal/hostbridge"
 )
 
 type Client struct {

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"go-prime-agent/internal/proto"
+	"github.com/xor/go-prime-agent/internal/proto"
 )
 
 // readAll parses request lines until EOF. Malformed lines emit a

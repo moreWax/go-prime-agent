@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"go-prime-agent/internal/eval"
-	"go-prime-agent/internal/proto"
+	"github.com/xor/go-prime-agent/internal/eval"
+	"github.com/xor/go-prime-agent/internal/proto"
 )
 
 // pythonBootstrapMarks identify the stock host's Python bootstrap cell by

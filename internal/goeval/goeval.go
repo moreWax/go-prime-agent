@@ -26,7 +26,7 @@ import (
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
 
-	"go-prime-agent/internal/eval"
+	"github.com/xor/go-prime-agent/internal/eval"
 )
 
 type Evaluator struct {

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	"go-prime-agent/internal/proto"
+	"github.com/xor/go-prime-agent/internal/proto"
 )
 
 // Default snapshot limits (spec defaults mirrored from the Python runtime).

@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"go-prime-agent/internal/eval"
-	"go-prime-agent/internal/hostbridge"
-	"go-prime-agent/internal/proto"
+	"github.com/xor/go-prime-agent/internal/eval"
+	"github.com/xor/go-prime-agent/internal/hostbridge"
+	"github.com/xor/go-prime-agent/internal/proto"
 )
 
 // Evaluator executes one cell. The kernel owns scheduling, contexts, and the

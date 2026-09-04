@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"go-prime-agent/internal/proto"
+	"github.com/xor/go-prime-agent/internal/proto"
 )
 
 // executor drains the work queue one request at a time (v3 policy). When

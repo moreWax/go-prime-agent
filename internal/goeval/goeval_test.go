@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"go-prime-agent/internal/goeval"
-	"go-prime-agent/internal/kernel"
-	"go-prime-agent/internal/proto"
-	"go-prime-agent/internal/testutil"
+	"github.com/xor/go-prime-agent/internal/goeval"
+	"github.com/xor/go-prime-agent/internal/kernel"
+	"github.com/xor/go-prime-agent/internal/proto"
+	"github.com/xor/go-prime-agent/internal/testutil"
 )
 
 func goHarness(t *testing.T) *testutil.Harness {

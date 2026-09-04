@@ -13,7 +13,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
@@ -28,12 +28,19 @@ interface PendingRequest {
 const PROTOCOL_TIMEOUT_MS = 30_000;
 const CELL_TIMEOUT_MS = 120_000;
 
-function kernelBinary(cwd: string): string {
+/**
+ * Kernel binary: $GORLM_BIN, else <repo>/bin/gorlm located relative to this
+ * extension file (the extension lives at <repo>/.prime/agent/extensions/).
+ */
+function kernelBinary(): string {
 	const fromEnv = process.env.GORLM_BIN;
 	if (fromEnv) return fromEnv;
-	const local = resolve(cwd, "bin/gorlm");
+	const here = new URL(".", import.meta.url).pathname;
+	const local = resolve(here, "../../../bin/gorlm");
 	if (existsSync(local)) return local;
-	return "/tmp/gorlm";
+	throw new Error(
+		`gorlm not found at ${local} — run \`make build\` in the repo or set GORLM_BIN`,
+	);
 }
 
 class GoKernel {
@@ -196,7 +203,7 @@ let kernel: GoKernel | null = null;
 
 export default function goKernelExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
-		kernel = new GoKernel(kernelBinary(ctx.cwd));
+		kernel = new GoKernel(kernelBinary());
 	});
 
 	pi.on("tool_call", async (event) => {

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"go-prime-agent/internal/eval"
-	"go-prime-agent/internal/kernel"
-	"go-prime-agent/internal/proto"
-	"go-prime-agent/internal/testutil"
+	"github.com/xor/go-prime-agent/internal/eval"
+	"github.com/xor/go-prime-agent/internal/kernel"
+	"github.com/xor/go-prime-agent/internal/proto"
+	"github.com/xor/go-prime-agent/internal/testutil"
 )
 
 func ready(t *testing.T, h *testutil.Harness) {
