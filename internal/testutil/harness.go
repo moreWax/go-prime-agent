@@ -15,14 +15,18 @@ import (
 	"go-prime-agent/internal/proto"
 )
 
+// Harness wires a Kernel to a fake host over in-memory pipes and collects
+// every event the runtime emits. Close is registered with t.Cleanup.
 type Harness struct {
-	T         *testing.T
-	ToKernel  io.Writer
-	closeEvt  io.WriteCloser
-	Events    chan proto.Event
-	HostReqs  chan proto.Event // demuxed host_request frames
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	T        *testing.T
+	ToKernel io.Writer
+	Events   chan proto.Event
+	HostReqs chan proto.Event // demuxed host_request frames
+
+	cancel   context.CancelFunc
+	closeEvt io.WriteCloser
+	done     chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewHarness starts a Kernel over in-memory pipes. cfg may be nil or mutate
@@ -36,9 +40,11 @@ func NewHarness(t *testing.T, cfg func(*kernel.Config)) *Harness {
 		T: t, ToKernel: kw, closeEvt: ew,
 		Events:   make(chan proto.Event, 256),
 		HostReqs: make(chan proto.Event, 64),
+		done:     make(chan struct{}),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
+	t.Cleanup(h.Close)
 
 	conf := kernel.Config{In: kr, Out: ew}
 	if cfg != nil {
@@ -56,7 +62,7 @@ func NewHarness(t *testing.T, cfg func(*kernel.Config)) *Harness {
 		for sc.Scan() {
 			var e proto.Event
 			if err := json.Unmarshal(sc.Bytes(), &e); err == nil {
-				if e.Event == "host_request" {
+				if e.Event == proto.KindHostRequest {
 					h.HostReqs <- e
 				} else {
 					h.Events <- e
@@ -68,13 +74,25 @@ func NewHarness(t *testing.T, cfg func(*kernel.Config)) *Harness {
 	return h
 }
 
+// Send writes one request line to the kernel.
 func (h *Harness) Send(line string) {
 	if _, err := io.WriteString(h.ToKernel, line+"\n"); err != nil {
 		h.T.Fatalf("send: %v", err)
 	}
 }
 
+// SendReq marshals and sends a request.
+func (h *Harness) SendReq(v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		h.T.Fatal(err)
+	}
+	h.Send(string(b))
+}
+
+// Await reads the next event or fails the test on timeout.
 func (h *Harness) Await(timeout time.Duration) proto.Event {
+	h.T.Helper()
 	select {
 	case e, ok := <-h.Events:
 		if !ok {
@@ -90,12 +108,13 @@ func (h *Harness) Await(timeout time.Duration) proto.Event {
 // WantDone reads events until the done for id, returning it plus the
 // intervening events.
 func (h *Harness) WantDone(id string, timeout time.Duration) (proto.Event, []proto.Event) {
+	h.T.Helper()
 	var mid []proto.Event
 	deadline := time.After(timeout)
 	for {
 		select {
 		case e := <-h.Events:
-			if e.Event == "done" && e.ID != nil && *e.ID == id {
+			if e.Event == proto.KindDone && e.ID != nil && *e.ID == id {
 				return e, mid
 			}
 			mid = append(mid, e)
@@ -105,9 +124,62 @@ func (h *Harness) WantDone(id string, timeout time.Duration) (proto.Event, []pro
 	}
 }
 
+// FindResult returns the text of the first result event, if any.
+func FindResult(mid []proto.Event) *string {
+	for _, m := range mid {
+		if m.Event == proto.KindResult {
+			s := m.Text
+			return &s
+		}
+	}
+	return nil
+}
+
+// HostAutoReplier replies to every host_request with fn's result until the
+// harness closes. fn receives the decoded envelope's kind and payload.
+func (h *Harness) HostAutoReplier(fn func(kind string, payload any) (json.RawMessage, error)) {
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		for {
+			select {
+			case <-h.done:
+				return
+			case e := <-h.HostReqs:
+				if e.ID == nil {
+					continue
+				}
+				var env struct {
+					Kind    string `json:"kind"`
+					Payload any    `json:"payload"`
+				}
+				_ = json.Unmarshal(e.Data, &env)
+				reply := proto.Reply{Status: proto.StatusOK}
+				if res, err := fn(env.Kind, env.Payload); err != nil {
+					reply.Status = "error"
+					reply.Error = err.Error()
+				} else {
+					reply.Result = res
+				}
+				h.SendReq(proto.Request{Type: "host_reply", ID: *e.ID, Data: mustJSON(h.T, reply)})
+			}
+		}
+	}()
+}
+
+// Close tears the harness down; registered with t.Cleanup.
 func (h *Harness) Close() {
+	close(h.done)
 	h.cancel()
 	h.ToKernel.(io.WriteCloser).Close()
 	h.closeEvt.Close()
 	h.wg.Wait()
+}
+
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

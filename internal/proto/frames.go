@@ -4,7 +4,6 @@
 package proto
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,10 +12,31 @@ import (
 
 const ProtocolVersion = 3
 
-// Event kinds the v3 host accepts. Unknown kinds are treated as corruption.
-var EventKinds = map[string]bool{
-	"ready": true, "stdout": true, "stderr": true, "result": true,
-	"display": true, "host_request": true, "error": true, "done": true,
+// Event kinds (spec: Events). The v3 host validates these strictly.
+const (
+	KindReady       = "ready"
+	KindStdout      = "stdout"
+	KindStderr      = "stderr"
+	KindResult      = "result"
+	KindDisplay     = "display"
+	KindHostRequest = "host_request"
+	KindError       = "error"
+	KindDone        = "done"
+)
+
+// Done statuses and error names used across the runtime.
+const (
+	StatusOK    = "ok"
+	StatusError = "error"
+
+	EnameProtocol  = "ProtocolError"
+	EnameKeyboard  = "KeyboardInterrupt"
+	EnameCellError = "Error"
+)
+
+var eventKinds = map[string]bool{
+	KindReady: true, KindStdout: true, KindStderr: true, KindResult: true,
+	KindDisplay: true, KindHostRequest: true, KindError: true, KindDone: true,
 }
 
 // Request is a host-to-runtime frame.
@@ -32,41 +52,65 @@ type Request struct {
 	PruneOversized   *bool           `json:"prune_oversized,omitempty"`
 }
 
-// Reply is the payload of a host_reply request: {"status":"ok","result":{...}}
-// or an error envelope.
+// Reply is the payload of a host_reply request:
+// {"status":"ok","result":{...}} or an error envelope.
 type Reply struct {
 	Status string          `json:"status"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  string          `json:"error,omitempty"`
 }
 
-// Event is a runtime-to-host frame. Field set matches repl.md exactly;
-// optional fields are omitted when zero.
+// Event is a runtime-to-host frame. Field set matches repl.md; optional
+// fields are omitted when zero.
 type Event struct {
-	Event     string          `json:"event"`
-	ID        *string         `json:"id"` // nil => JSON null
-	Protocol  int             `json:"protocol,omitempty"`
-	// Kept the v3 field name for host compatibility; carries the Go
-	// toolchain version. A v4 fork renames this to "runtime".
+	Event    string  `json:"event"`
+	ID       *string `json:"id"` // nil => JSON null
+	Protocol int     `json:"protocol,omitempty"`
+	// Field name kept for v3 host compatibility; carries the Go toolchain
+	// version. A v4 fork renames it to "runtime".
 	Runtime   string          `json:"python,omitempty"`
 	Text      string          `json:"text,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
 	EName     string          `json:"ename,omitempty"`
 	EValue    string          `json:"evalue,omitempty"`
 	Traceback []string        `json:"traceback,omitempty"`
-	// done extras
-	Status    string          `json:"status,omitempty"`
-	Reason    string          `json:"reason,omitempty"`
-	Names     []string        `json:"names,omitempty"`
-	Saved     []string        `json:"saved,omitempty"`
-	Skipped   []string        `json:"skipped,omitempty"`
-	Pruned    []string        `json:"pruned,omitempty"`
-	Bytes     int64           `json:"bytes,omitempty"`
-	Restored  []string        `json:"restored,omitempty"`
-	Failed    []string        `json:"failed,omitempty"`
+	Status    string          `json:"status,omitempty"` // done only
+	// done extras (spec: Events); also used by DoneEvent.
+	DoneExtras
 }
 
-func (e Event) Valid() bool { return EventKinds[e.Event] }
+// DoneExtras are the optional payloads a done event may carry.
+type DoneExtras struct {
+	Reason   string   `json:"reason,omitempty"`
+	Names    []string `json:"names,omitempty"`    // list_names
+	Saved    []string `json:"saved,omitempty"`    // snapshot
+	Skipped  []string `json:"skipped,omitempty"`  // snapshot
+	Pruned   []string `json:"pruned,omitempty"`   // snapshot
+	Bytes    int64    `json:"bytes,omitempty"`    // snapshot
+	Restored []string `json:"restored,omitempty"` // restore
+	Failed   []string `json:"failed,omitempty"`   // restore
+}
+
+// DoneEvent builds a done frame; extras may be nil.
+func DoneEvent(id, status string, extras *DoneExtras) Event {
+	e := Event{Event: KindDone, ID: IDPtr(id), Status: status}
+	if extras != nil {
+		e.DoneExtras = *extras
+	}
+	return e
+}
+
+// HostRequestEvent builds a host_request frame with the standard envelope
+// {"kind": ..., "payload": ...}.
+func HostRequestEvent(id, kind string, payload any) (Event, error) {
+	data, err := json.Marshal(map[string]any{"kind": kind, "payload": payload})
+	if err != nil {
+		return Event{}, err
+	}
+	return Event{Event: KindHostRequest, ID: IDPtr(id), Data: data}, nil
+}
+
+func (e Event) Valid() bool { return eventKinds[e.Event] }
 
 func IDPtr(s string) *string { return &s }
 
@@ -74,13 +118,10 @@ func IDPtr(s string) *string { return &s }
 // frames from any goroutine never interleave (spec: Channels).
 type Writer struct {
 	mu  sync.Mutex
-	bw  *bufio.Writer
 	out io.Writer
 }
 
-func NewWriter(out io.Writer) *Writer {
-	return &Writer{bw: bufio.NewWriter(out), out: out}
-}
+func NewWriter(out io.Writer) *Writer { return &Writer{out: out} }
 
 func (w *Writer) Write(e Event) error {
 	if !e.Valid() {
@@ -92,8 +133,6 @@ func (w *Writer) Write(e Event) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if _, err := w.out.Write(append(b, '\n')); err != nil {
-		return err
-	}
-	return w.bw.Flush()
+	_, err = w.out.Write(append(b, '\n'))
+	return err
 }

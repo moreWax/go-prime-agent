@@ -16,8 +16,8 @@ import (
 )
 
 type Bridge struct {
-	w  *proto.Writer
-	mu sync.Mutex
+	w       *proto.Writer
+	mu      sync.Mutex
 	pending map[string]chan proto.Reply
 }
 
@@ -73,6 +73,20 @@ func (b *Bridge) Resolve(id string, r proto.Reply) {
 	if ok {
 		ch <- r
 	}
+}
+
+// CallHost satisfies eval.Host structurally: same signature, raw-JSON
+// result. Defined here so the kernel can pass the bridge to cells without
+// an adapter type.
+func (b *Bridge) CallHost(ctx context.Context, kind string, payload any) (json.RawMessage, error) {
+	r, err := b.Call(ctx, kind, payload)
+	if err != nil {
+		return nil, err
+	}
+	if r.Status != "ok" {
+		return nil, fmt.Errorf("host error: %s", r.Error)
+	}
+	return r.Result, nil
 }
 
 func (b *Bridge) drop(id string) {
