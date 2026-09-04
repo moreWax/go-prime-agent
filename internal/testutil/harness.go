@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xor/go-prime-agent/internal/kernel"
-	"github.com/xor/go-prime-agent/internal/proto"
+	"github.com/moreWax/go-prime-agent/internal/kernel"
+	"github.com/moreWax/go-prime-agent/internal/proto"
 )
 
 // Harness wires a Kernel to a fake host over in-memory pipes and collects

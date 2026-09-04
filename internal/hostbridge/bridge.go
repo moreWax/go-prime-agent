@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/xor/go-prime-agent/internal/proto"
+	"github.com/moreWax/go-prime-agent/internal/proto"
 )
 
 type Bridge struct {

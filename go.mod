@@ -1,4 +1,4 @@
-module github.com/xor/go-prime-agent
+module github.com/moreWax/go-prime-agent
 
 go 1.24
 

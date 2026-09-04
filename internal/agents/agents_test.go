@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xor/go-prime-agent/internal/agents"
-	"github.com/xor/go-prime-agent/internal/hostbridge"
-	"github.com/xor/go-prime-agent/internal/proto"
+	"github.com/moreWax/go-prime-agent/internal/agents"
+	"github.com/moreWax/go-prime-agent/internal/hostbridge"
+	"github.com/moreWax/go-prime-agent/internal/proto"
 )
 
 // fakeHost reads host_request frames from the bridge's writer and resolves
