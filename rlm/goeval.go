@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,8 +30,9 @@ import (
 )
 
 type GoEvaluator struct {
-	mu sync.Mutex
-	i  *interp.Interpreter
+	mu       sync.Mutex
+	i        *interp.Interpreter
+	imported map[string]bool // package import paths already bound
 
 	// per-cell slots, guarded by mu
 	ctx  context.Context
@@ -55,7 +58,7 @@ func (w outWriter) Write(p []byte) (int, error) {
 var _ io.Writer = outWriter{}
 
 func NewGoEvaluator() *GoEvaluator {
-	e := &GoEvaluator{ctx: context.Background()}
+	e := &GoEvaluator{ctx: context.Background(), imported: make(map[string]bool)}
 	e.i = interp.New(interp.Options{Stdout: outWriter{e}})
 	e.i.Use(stdlib.Symbols)
 
@@ -82,6 +85,41 @@ func NewGoEvaluator() *GoEvaluator {
 					panic(err)
 				}
 				return v
+			}),
+			// Spawn admits a subagent task; returns the child handle
+			// immediately after admission (never waits for its answer).
+			"Spawn": reflect.ValueOf(func(task, name string) map[string]any {
+				ctx, host := e.slotHost()
+				raw, err := host(ctx, "spawn_task", map[string]any{"task": task, "name": name})
+				if err != nil {
+					panic(err)
+				}
+				var ch map[string]any
+				if err := json.Unmarshal(raw, &ch); err != nil {
+					panic(err)
+				}
+				return ch
+			}),
+			// Send delivers an agent message (role: parent|sibling|child).
+			"Send": reflect.ValueOf(func(role, name, message string) error {
+				ctx, host := e.slotHost()
+				_, err := host(ctx, "agent_message", map[string]any{
+					"receiver_role": role, "receiver_name": name, "message": message,
+				})
+				return err
+			}),
+			// ListAgents returns the family roster.
+			"ListAgents": reflect.ValueOf(func() []map[string]any {
+				ctx, host := e.slotHost()
+				raw, err := host(ctx, "list_agents", nil)
+				if err != nil {
+					panic(err)
+				}
+				var out []map[string]any
+				if err := json.Unmarshal(raw, &out); err != nil {
+					panic(err)
+				}
+				return out
 			}),
 		},
 	})
@@ -124,6 +162,9 @@ func (e *GoEvaluator) Run(env Env) (res Result, err error) {
 
 	var v reflect.Value
 	for _, c := range chunk(env.Code) {
+		if e.markImported(c) {
+			continue // import of an already-bound package: idempotent
+		}
 		v, err = e.i.Eval(c)
 		if err != nil {
 			break
@@ -152,4 +193,35 @@ func (e *GoEvaluator) Run(env Env) (res Result, err error) {
 		}
 	}
 	return Result{}, nil
+}
+
+var importPathRe = regexp.MustCompile(`"([\w./-]+)"`)
+
+// markImported reports whether the chunk is an import statement whose path
+// is already bound in the interpreter (making re-imports idempotent — a
+// persistent REPL affordance Python gets for free).
+func (e *GoEvaluator) markImported(chunkSrc string) bool {
+	t := strings.TrimSpace(chunkSrc)
+	if !strings.HasPrefix(t, "import") {
+		return false
+	}
+	paths := importPathRe.FindAllStringSubmatch(t, -1)
+	if len(paths) == 0 {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	all := true
+	for _, m := range paths {
+		if !e.imported[m[1]] {
+			all = false
+		}
+	}
+	if all {
+		return true
+	}
+	for _, m := range paths {
+		e.imported[m[1]] = true
+	}
+	return false
 }

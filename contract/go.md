@@ -18,4 +18,6 @@ Practical rules:
 - Do not assume the kernel is the native runtime of the external thing being investigated. A repository, package, service, dataset, or API may have its own environment and normal interface — evaluate external systems through their own interface (`go run`, `go test` in the project's module), then use cells to coordinate the process and analyze what comes back.
 - Compaction preserves declared names, not live values; keep large data on disk and reload it when needed.
 
-Subagents: `rlm.HostCall("spawn_task", map[string]any{"task": "...", "name": "..."})` admits a child and returns its handle immediately after admission — it never waits for the child's answer. Fan out children concurrently and gather replies as they arrive.
+Subagents and harness methods are native Go calls on the `rlm` package: `rlm.Spawn(task, name)` admits a child and returns its handle map immediately after admission — it never waits for the child's answer; `rlm.Send(role, name, message)` delivers an agent message; `rlm.ListAgents()` returns the family roster; `rlm.HostCall(kind, payload)` reaches any other host capability. Fan out children concurrently and gather replies as they arrive.
+
+If a cell fails with a syntax or name error, you are almost certainly writing the wrong language — cells are Go, not Python. Rewrite the cell in Go and continue.
