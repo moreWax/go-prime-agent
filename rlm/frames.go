@@ -1,13 +1,12 @@
-// Package proto implements the RLM runtime wire protocol (v3):
-// newline-delimited JSON, requests on stdin, events on stdout.
-// Spec: prime-agent-runtime/src/rlm/repl.md
+// frames.go — RLM wire protocol v3 (see repl.md): NDJSON frames, requests
+// on stdin, events on stdout.
 package rlm
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sync"
+	"sync/atomic"
 )
 
 const ProtocolVersion = 3
@@ -114,25 +113,54 @@ func (e Event) Valid() bool { return eventKinds[e.Event] }
 
 func IDPtr(s string) *string { return &s }
 
-// Writer serializes event frames: one locked write sequence per frame, so
-// frames from any goroutine never interleave (spec: Channels).
+// Writer serializes event frames through a single writer goroutine that
+// owns the output: no mutex, and frames from any goroutine never interleave
+// because one goroutine writes them in channel order (spec: Channels).
+// Backpressure is the channel send — a slow consumer blocks senders exactly
+// like the fd would.
 type Writer struct {
-	mu  sync.Mutex
-	out io.Writer
+	ch   chan Event
+	err  atomic.Pointer[error]
+	done chan struct{}
 }
 
-func NewWriter(out io.Writer) *Writer { return &Writer{out: out} }
+func NewWriter(out io.Writer) *Writer {
+	w := &Writer{ch: make(chan Event, 1024), done: make(chan struct{})}
+	go w.run(out)
+	return w
+}
 
+func (w *Writer) run(out io.Writer) {
+	defer close(w.done)
+	for e := range w.ch {
+		b, err := json.Marshal(e)
+		if err == nil {
+			b = append(b, '\n')
+			_, err = out.Write(b)
+		}
+		if err != nil {
+			var pe = err
+			w.err.Store(&pe)
+		}
+	}
+}
+
+// Write queues one frame. It reports the first prior write failure (sticky)
+// or invalid-kind errors; queued frames are written by the actor.
 func (w *Writer) Write(e Event) error {
 	if !e.Valid() {
 		return fmt.Errorf("proto: invalid event kind %q", e.Event)
 	}
-	b, err := json.Marshal(e)
-	if err != nil {
-		return err
+	if p := w.err.Load(); p != nil {
+		return *p
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	_, err = w.out.Write(append(b, '\n'))
-	return err
+	w.ch <- e
+	return nil
+}
+
+// Close stops the actor after draining queued frames. Only for orderly
+// shutdown by the process owner; background senders must be quiesced first.
+func (w *Writer) Close() {
+	close(w.ch)
+	<-w.done
 }

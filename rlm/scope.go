@@ -1,55 +1,80 @@
 package rlm
 
-import "sync"
+// Scope is the persistent user namespace shared by all cells, owned by a
+// single actor goroutine — no lock. Get/Set ordering follows channel FIFO,
+// which the serial executor already relies on.
+type scopeCmd struct {
+	op    string // set | get | delete | names | entries
+	k     string
+	v     any
+	reply chan scopeReply
+}
 
-// Scope is the persistent user namespace shared by all cells. Concurrent
-// cell execution (v4 policy) mutates it under the write lock; snapshots and
-// list_names take the read lock and never block writers longer than the copy.
+type scopeReply struct {
+	v       any
+	ok      bool
+	names   []string
+	entries map[string]any
+}
+
 type Scope struct {
-	mu    sync.RWMutex
-	names map[string]any
+	cmds chan scopeCmd
 }
 
-func NewScope() *Scope { return &Scope{names: make(map[string]any)} }
-
-func (s *Scope) Set(k string, v any) {
-	s.mu.Lock()
-	s.names[k] = v
-	s.mu.Unlock()
+func NewScope() *Scope {
+	s := &Scope{cmds: make(chan scopeCmd, 256)}
+	go s.run()
+	return s
 }
+
+func (s *Scope) run() {
+	names := make(map[string]any)
+	for c := range s.cmds {
+		switch c.op {
+		case "set":
+			names[c.k] = c.v
+		case "get":
+			v, ok := names[c.k]
+			c.reply <- scopeReply{v: v, ok: ok}
+		case "delete":
+			delete(names, c.k)
+		case "names":
+			out := make([]string, 0, len(names))
+			for k := range names {
+				out = append(out, k)
+			}
+			c.reply <- scopeReply{names: out}
+		case "entries":
+			out := make(map[string]any, len(names))
+			for k, v := range names {
+				out[k] = v
+			}
+			c.reply <- scopeReply{entries: out}
+		}
+	}
+}
+
+func (s *Scope) Set(k string, v any) { s.cmds <- scopeCmd{op: "set", k: k, v: v} }
 
 func (s *Scope) Get(k string) (any, bool) {
-	s.mu.RLock()
-	v, ok := s.names[k]
-	s.mu.RUnlock()
-	return v, ok
+	ch := make(chan scopeReply, 1)
+	s.cmds <- scopeCmd{op: "get", k: k, reply: ch}
+	r := <-ch
+	return r.v, r.ok
 }
 
+func (s *Scope) Delete(k string) { s.cmds <- scopeCmd{op: "delete", k: k} }
+
+// Names returns unsorted names; callers sort for deterministic output.
 func (s *Scope) Names() []string {
-	s.mu.RLock()
-	out := make([]string, 0, len(s.names))
-	for k := range s.names {
-		out = append(out, k)
-	}
-	s.mu.RUnlock()
-	// sorted by caller
-	return out
+	ch := make(chan scopeReply, 1)
+	s.cmds <- scopeCmd{op: "names", reply: ch}
+	return (<-ch).names
 }
 
-// Entries copies the namespace under the read lock; snapshot serializes
-// off the critical path.
+// Entries copies the namespace (snapshot input).
 func (s *Scope) Entries() map[string]any {
-	s.mu.RLock()
-	out := make(map[string]any, len(s.names))
-	for k, v := range s.names {
-		out[k] = v
-	}
-	s.mu.RUnlock()
-	return out
-}
-
-func (s *Scope) Delete(k string) {
-	s.mu.Lock()
-	delete(s.names, k)
-	s.mu.Unlock()
+	ch := make(chan scopeReply, 1)
+	s.cmds <- scopeCmd{op: "entries", reply: ch}
+	return (<-ch).entries
 }

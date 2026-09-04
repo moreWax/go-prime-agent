@@ -1,7 +1,9 @@
-// Package hostbridge correlates concurrent host_request/host_reply exchanges.
-// Any number of calls may be in flight at once; each gets a buffered reply
-// channel keyed by id. All waits are context-aware: cancelling the calling
-// cell's context abandons the wait and drops the pending entry.
+// harness.go — host bridge (harness.py counterpart): correlates concurrent
+// host_request/host_reply exchanges. The pending map lives in a single
+// registry goroutine fed by a command channel — no lock, and registration
+// always precedes resolution for the same id by channel FIFO (a host_reply
+// can only exist after its host_request frame was written, which happens
+// after the register command was queued).
 package rlm
 
 import (
@@ -10,17 +12,43 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sync"
+
+	rlmhost "context"
 )
 
+type bridgeCmd struct {
+	op string // register | resolve | drop
+	id string
+	ch chan Reply
+	r  Reply
+}
+
 type Bridge struct {
-	w       *Writer
-	mu      sync.Mutex
-	pending map[string]chan Reply
+	w    *Writer
+	cmds chan bridgeCmd
 }
 
 func NewBridge(w *Writer) *Bridge {
-	return &Bridge{w: w, pending: make(map[string]chan Reply)}
+	b := &Bridge{w: w, cmds: make(chan bridgeCmd, 256)}
+	go b.run()
+	return b
+}
+
+func (b *Bridge) run() {
+	pending := make(map[string]chan Reply)
+	for c := range b.cmds {
+		switch c.op {
+		case "register":
+			pending[c.id] = c.ch
+		case "resolve":
+			if ch, ok := pending[c.id]; ok {
+				delete(pending, c.id)
+				ch <- c.r // buffered(1): never blocks the registry
+			}
+		case "drop":
+			delete(pending, c.id)
+		}
+	}
 }
 
 func newID() string {
@@ -32,21 +60,19 @@ func newID() string {
 }
 
 // Call ships one host_request and blocks until the matching host_reply, the
-// context is cancelled, or the writer fails. Safe for concurrent use: fan out
-// from as many goroutines as you like.
-func (b *Bridge) Call(ctx context.Context, kind string, payload any) (Reply, error) {
+// context is cancelled, or the writer fails. Any number of calls may be in
+// flight — fan out from as many goroutines as you like.
+func (b *Bridge) Call(ctx rlmhost.Context, kind string, payload any) (Reply, error) {
 	id := newID()
 	ch := make(chan Reply, 1)
-	b.mu.Lock()
-	b.pending[id] = ch
-	b.mu.Unlock()
+	b.cmds <- bridgeCmd{op: "register", id: id, ch: ch}
 
-	data, err := json.Marshal(map[string]any{"kind": kind, "payload": payload})
+	ev, err := HostRequestEvent(id, kind, payload)
 	if err == nil {
-		err = b.w.Write(Event{Event: "host_request", ID: IDPtr(id), Data: data})
+		err = b.w.Write(ev)
 	}
 	if err != nil {
-		b.drop(id)
+		b.cmds <- bridgeCmd{op: "drop", id: id}
 		return Reply{}, err
 	}
 
@@ -54,41 +80,25 @@ func (b *Bridge) Call(ctx context.Context, kind string, payload any) (Reply, err
 	case r := <-ch:
 		return r, nil
 	case <-ctx.Done():
-		b.drop(id)
+		b.cmds <- bridgeCmd{op: "drop", id: id}
 		return Reply{}, fmt.Errorf("host_request %s abandoned: %w", id, ctx.Err())
 	}
 }
 
-// Resolve routes a host_reply. Unknown or abandoned ids are dropped (spec:
-// Host bridge).
+// Resolve routes a host_reply. Unknown or abandoned ids are dropped
+// (spec: Host bridge).
 func (b *Bridge) Resolve(id string, r Reply) {
-	b.mu.Lock()
-	ch, ok := b.pending[id]
-	if ok {
-		delete(b.pending, id)
-	}
-	b.mu.Unlock()
-	if ok {
-		ch <- r
-	}
+	b.cmds <- bridgeCmd{op: "resolve", id: id, r: r}
 }
 
-// CallHost satisfies Host structurally: same signature, raw-JSON
-// result. Defined here so the kernel can pass the bridge to cells without
-// an adapter type.
+// CallHost satisfies the evaluator Host port: raw-JSON result.
 func (b *Bridge) CallHost(ctx context.Context, kind string, payload any) (json.RawMessage, error) {
 	r, err := b.Call(ctx, kind, payload)
 	if err != nil {
 		return nil, err
 	}
-	if r.Status != "ok" {
+	if r.Status != StatusOK {
 		return nil, fmt.Errorf("host error: %s", r.Error)
 	}
 	return r.Result, nil
-}
-
-func (b *Bridge) drop(id string) {
-	b.mu.Lock()
-	delete(b.pending, id)
-	b.mu.Unlock()
 }

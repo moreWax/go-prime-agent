@@ -7,8 +7,30 @@ package for the protocol contract.
 
 ## Concurrency ladder
 
-Every layer is goroutine + `context.Context` end to end. Nothing waits on a
-mutex it could wait on a channel for.
+Every layer is goroutine + `context.Context` end to end, and the core is
+mutex-free by construction: each shared structure is owned by a single
+actor goroutine fed by a command channel —
+
+- `proto.Writer` → writer goroutine owning the fd (frames serialize in
+  channel order; backpressure is the channel send)
+- `Bridge` → registry goroutine owning the pending map (register/resolve
+  FIFO guarantees registration precedes any resolution for that id)
+- `requestTable` → actor owning active/parked/cancel state (all interrupt
+  semantics single-threaded by construction)
+- `Scope` → namespace actor
+- `GoEvaluator` slots → `atomic.Pointer` swap (single word; only the
+  serial eval path writes)
+
+Where mutexes and WaitGroups make more sense, we keep them — measured
+(`rlm/coord_bench_test.go`, ns/op): mutex lock/unlock ~55, channel
+send+recv ~232, WaitGroup fan-out ×8 ~8000 vs channel fan-out ~11700,
+goroutine spawn ~1300. WaitGroups are cheaper than channels; goroutine
+spawns are the real cost. So the rule is: channels for ownership and
+`select` composition (cancellation, timeouts), WaitGroup for lifecycle
+(`kernel.wg`), `sync.Once` for shutdown, per-path mutexes in the edit
+skill where a semaphore would be ceremony. Coordination is noise next to
+JSON + fd writes + interpretation anyway — the design clarity is the
+point, not the nanoseconds.
 
 - **L0 wire.** v3 keeps `execute` requests serial (host policy), but
   `interrupt` and `host_reply` frames route on the reader goroutine the moment

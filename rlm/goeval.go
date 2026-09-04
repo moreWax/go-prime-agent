@@ -22,7 +22,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/traefik/yaegi/interp"
@@ -30,15 +30,13 @@ import (
 )
 
 type GoEvaluator struct {
-	mu       sync.Mutex
-	i        *interp.Interpreter
-	imported map[string]bool // package import paths already bound
-	skills   []SkillInfo     // loaded Go skills (import "rlm/<name>")
-
-	// per-cell slots, guarded by mu
-	ctx  context.Context
-	out  func(string)
-	host func(ctx context.Context, kind string, payload any) (json.RawMessage, error)
+	i *interp.Interpreter
+	// slots are swapped atomically (single word): the cell context during
+	// Run, the kernel root between cells. Background goroutines read them
+	// without locks; only the serial eval path writes.
+	slots    atomic.Pointer[evalSlots]
+	imported map[string]bool // eval-goroutine only
+	skills   []SkillInfo     // immutable after construction
 }
 
 // outWriter routes interpreted print/println to the current cell's
@@ -47,10 +45,7 @@ type GoEvaluator struct {
 type outWriter struct{ e *GoEvaluator }
 
 func (w outWriter) Write(p []byte) (int, error) {
-	w.e.mu.Lock()
-	f := w.e.out
-	w.e.mu.Unlock()
-	if f != nil {
+	if f := w.e.loadSlots().out; f != nil {
 		f(string(p))
 	}
 	return len(p), nil
@@ -65,7 +60,8 @@ func NewGoEvaluator() *GoEvaluator { return newGoEvaluator("") }
 func NewGoEvaluatorWithSkills(dir string) *GoEvaluator { return newGoEvaluator(dir) }
 
 func newGoEvaluator(skillsDir string) *GoEvaluator {
-	e := &GoEvaluator{ctx: context.Background(), imported: make(map[string]bool)}
+	e := &GoEvaluator{imported: make(map[string]bool)}
+	e.slots.Store(&evalSlots{ctx: context.Background()})
 	o := interp.Options{Stdout: outWriter{e}}
 	if gp, skills, err := PrepareSkillGoPath(skillsDir); err == nil && gp != "" {
 		o.GoPath = gp
@@ -80,7 +76,7 @@ func newGoEvaluator(skillsDir string) *GoEvaluator {
 			// Sleep is the interruptible sleep; time.Sleep in a cell is NOT
 			// cancellable and should be avoided.
 			"Sleep": reflect.ValueOf(func(ms int) error {
-				ctx := e.slotCtx()
+				ctx := e.loadSlots().ctx
 				select {
 				case <-time.After(time.Duration(ms) * time.Millisecond):
 					return nil
@@ -91,7 +87,8 @@ func newGoEvaluator(skillsDir string) *GoEvaluator {
 			// HostCall reaches the host bridge (subagents, messaging, tools).
 			// Errors panic; Yaegi converts them into cell errors.
 			"HostCall": reflect.ValueOf(func(kind string, payload any) any {
-				ctx, host := e.slotHost()
+				s := e.loadSlots()
+				ctx, host := s.ctx, s.host
 				v, err := host(ctx, kind, payload)
 				if err != nil {
 					panic(err)
@@ -101,7 +98,8 @@ func newGoEvaluator(skillsDir string) *GoEvaluator {
 			// Spawn admits a subagent task; returns the child handle
 			// immediately after admission (never waits for its answer).
 			"Spawn": reflect.ValueOf(func(task, name string) map[string]any {
-				ctx, host := e.slotHost()
+				s := e.loadSlots()
+				ctx, host := s.ctx, s.host
 				raw, err := host(ctx, "spawn_task", map[string]any{"task": task, "name": name})
 				if err != nil {
 					panic(err)
@@ -114,7 +112,8 @@ func newGoEvaluator(skillsDir string) *GoEvaluator {
 			}),
 			// Send delivers an agent message (role: parent|sibling|child).
 			"Send": reflect.ValueOf(func(role, name, message string) error {
-				ctx, host := e.slotHost()
+				s := e.loadSlots()
+				ctx, host := s.ctx, s.host
 				_, err := host(ctx, "agent_message", map[string]any{
 					"receiver_role": role, "receiver_name": name, "message": message,
 				})
@@ -123,8 +122,6 @@ func newGoEvaluator(skillsDir string) *GoEvaluator {
 			}),
 			// Skills lists loaded Go skills (import "rlm/<name>").
 			"Skills": reflect.ValueOf(func() []string {
-				e.mu.Lock()
-				defer e.mu.Unlock()
 				out := make([]string, 0, len(e.skills))
 				for _, s := range e.skills {
 					out = append(out, s.Name)
@@ -133,7 +130,8 @@ func newGoEvaluator(skillsDir string) *GoEvaluator {
 			}),
 			// ListAgents returns the family roster.
 			"ListAgents": reflect.ValueOf(func() []map[string]any {
-				ctx, host := e.slotHost()
+				s := e.loadSlots()
+				ctx, host := s.ctx, s.host
 				raw, err := host(ctx, "list_agents", nil)
 				if err != nil {
 					panic(err)
@@ -163,17 +161,13 @@ func newGoEvaluator(skillsDir string) *GoEvaluator {
 	return e
 }
 
-func (e *GoEvaluator) slotCtx() context.Context {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.ctx
+type evalSlots struct {
+	ctx  context.Context
+	out  func(string)
+	host func(ctx context.Context, kind string, payload any) (json.RawMessage, error)
 }
 
-func (e *GoEvaluator) slotHost() (context.Context, func(context.Context, string, any) (json.RawMessage, error)) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.ctx, e.host
-}
+func (e *GoEvaluator) loadSlots() evalSlots { return *e.slots.Load() }
 
 // Run evaluates one cell in the persistent interpreter.
 func (e *GoEvaluator) Run(env Env) (res Result, err error) {
@@ -183,19 +177,11 @@ func (e *GoEvaluator) Run(env Env) (res Result, err error) {
 		}
 	}()
 
-	e.mu.Lock()
-	e.ctx = env.Ctx
-	e.out = env.Stdout
-	e.host = env.Host.CallHost
-	e.mu.Unlock()
+	e.slots.Store(&evalSlots{ctx: env.Ctx, out: env.Stdout, host: env.Host.CallHost})
 
 	// Between cells the slots fall back to the root context so background
 	// goroutines survive; out/host intentionally keep the last cell's values.
-	defer func() {
-		e.mu.Lock()
-		e.ctx = env.RootCtx
-		e.mu.Unlock()
-	}()
+	defer e.slots.Store(&evalSlots{ctx: env.RootCtx, out: env.Stdout, host: env.Host.CallHost})
 
 	var v reflect.Value
 	for _, c := range chunk(env.Code) {
@@ -246,8 +232,6 @@ func (e *GoEvaluator) markImported(chunkSrc string) bool {
 	if len(paths) == 0 {
 		return false
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	all := true
 	for _, m := range paths {
 		if !e.imported[m[1]] {

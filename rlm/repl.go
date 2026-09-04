@@ -63,7 +63,7 @@ type Kernel struct {
 	execDone  chan struct{} // closed when the executor exits
 	drainOnce sync.Once
 
-	table requestTable // live/queued requests + parked interrupts
+	table requestTable
 	wg    sync.WaitGroup
 }
 

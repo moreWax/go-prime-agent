@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"sync"
 )
 
 // readAll parses request lines until EOF. Malformed lines emit a
@@ -73,78 +72,89 @@ func (k *Kernel) enqueue(req Request) {
 	}
 }
 
-// requestTable tracks live/queued requests and parked interrupts. All
-// interrupt semantics from the spec live here:
+// requestTable tracks live/queued requests and parked interrupts, owned by
+// a single actor goroutine — no lock. All interrupt semantics from the spec
+// live here, single-threaded by construction:
 //
 //	interrupt with id    -> cancel that request, or park until it starts
 //	interrupt without id -> cancel the running request, or park for the next
 //	parked interrupts    -> delivered the moment their target activates
+type tableCmd struct {
+	op     string // register | activate | deactivate | interrupt
+	id     string
+	cancel context.CancelFunc
+	reply  chan tableReply
+}
+
+type tableReply struct {
+	cancel context.CancelFunc
+	parked bool
+}
+
 type requestTable struct {
-	mu       sync.Mutex
-	draining bool
-	activeID string
-	cancels  map[string]context.CancelFunc
-	parked   map[string]bool
-	parkNext bool
+	cmds chan tableCmd
 }
 
 func newRequestTable() requestTable {
-	return requestTable{
-		cancels: make(map[string]context.CancelFunc),
-		parked:  make(map[string]bool),
-	}
+	t := requestTable{cmds: make(chan tableCmd, 256)}
+	go t.run()
+	return t
 }
 
-func (t *requestTable) register(id string, cancel context.CancelFunc) {
-	t.mu.Lock()
-	t.cancels[id] = cancel
-	t.mu.Unlock()
-}
-
-func (t *requestTable) beginDrain() {
-	t.mu.Lock()
-	t.draining = true
-	t.mu.Unlock()
-}
-
-func (t *requestTable) interrupt(id string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if id != "" {
-		if cancel, ok := t.cancels[id]; ok {
-			cancel()
-		} else {
-			t.parked[id] = true
+func (t requestTable) run() {
+	var activeID string
+	cancels := make(map[string]context.CancelFunc)
+	parked := make(map[string]bool)
+	parkNext := false
+	for c := range t.cmds {
+		switch c.op {
+		case "register":
+			cancels[c.id] = c.cancel
+		case "activate":
+			activeID = c.id
+			p := parked[c.id] || parkNext
+			delete(parked, c.id)
+			parkNext = false
+			c.reply <- tableReply{cancel: cancels[c.id], parked: p} // buffered(1)
+		case "deactivate":
+			activeID = ""
+			delete(cancels, c.id)
+		case "interrupt":
+			if c.id != "" {
+				if cancel, ok := cancels[c.id]; ok {
+					cancel()
+				} else {
+					parked[c.id] = true
+				}
+			} else if activeID != "" {
+				// id-less: the running request, else park for the next one.
+				if cancel, ok := cancels[activeID]; ok {
+					cancel()
+				}
+			} else {
+				parkNext = true
+			}
 		}
-		return
 	}
-	// id-less: the running request, else park for the next one.
-	if t.activeID != "" {
-		if cancel, ok := t.cancels[t.activeID]; ok {
-			cancel()
-		}
-		return
-	}
-	t.parkNext = true
 }
 
-// activate marks id as running and reports its cancel func plus whether a
-// parked interrupt must fire immediately.
-func (t *requestTable) activate(id string) (cancel context.CancelFunc, parked bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.activeID = id
-	parked = t.parked[id] || t.parkNext
-	delete(t.parked, id)
-	t.parkNext = false
-	return t.cancels[id], parked
+func (t requestTable) register(id string, cancel context.CancelFunc) {
+	t.cmds <- tableCmd{op: "register", id: id, cancel: cancel}
 }
 
-func (t *requestTable) deactivate(id string) {
-	t.mu.Lock()
-	t.activeID = ""
-	delete(t.cancels, id)
-	t.mu.Unlock()
+func (t requestTable) activate(id string) (cancel context.CancelFunc, parked bool) {
+	ch := make(chan tableReply, 1)
+	t.cmds <- tableCmd{op: "activate", id: id, reply: ch}
+	r := <-ch
+	return r.cancel, r.parked
+}
+
+func (t requestTable) deactivate(id string) {
+	t.cmds <- tableCmd{op: "deactivate", id: id}
+}
+
+func (t requestTable) interrupt(id string) {
+	t.cmds <- tableCmd{op: "interrupt", id: id}
 }
 
 // done emits a done frame; extras may be nil.
