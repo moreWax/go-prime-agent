@@ -1,4 +1,4 @@
-package goeval_test
+package rlm_test
 
 import (
 	"encoding/json"
@@ -6,22 +6,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moreWax/go-prime-agent/internal/goeval"
-	"github.com/moreWax/go-prime-agent/internal/kernel"
-	"github.com/moreWax/go-prime-agent/internal/proto"
-	"github.com/moreWax/go-prime-agent/internal/testutil"
+	rlm "github.com/moreWax/go-prime-agent/rlm"
+	"github.com/moreWax/go-prime-agent/rlm/testutil"
 )
 
 func goHarness(t *testing.T) *testutil.Harness {
 	t.Helper()
-	h := testutil.NewHarness(t, func(c *kernel.Config) { c.Eval = goeval.New() })
-	if e := h.Await(2 * time.Second); e.Event != proto.KindReady {
+	h := testutil.NewHarness(t, func(c *rlm.Config) { c.Eval = rlm.NewGoEvaluator() })
+	if e := h.Await(2 * time.Second); e.Event != rlm.KindReady {
 		t.Fatalf("no ready: %+v", e)
 	}
 	return h
 }
 
-func exec(t *testing.T, h *testutil.Harness, id, code string) (proto.Event, []proto.Event) {
+func exec(t *testing.T, h *testutil.Harness, id, code string) (rlm.Event, []rlm.Event) {
 	t.Helper()
 	h.SendReq(map[string]any{"type": "execute", "id": id, "code": code})
 	return h.WantDone(id, 8*time.Second)
@@ -30,11 +28,11 @@ func exec(t *testing.T, h *testutil.Harness, id, code string) (proto.Event, []pr
 // Persistent interpreter state across cells + result events.
 func TestGoPersistence(t *testing.T) {
 	h := goHarness(t)
-	if e, _ := exec(t, h, "a", "x := 40"); e.Status != proto.StatusOK {
+	if e, _ := exec(t, h, "a", "x := 40"); e.Status != rlm.StatusOK {
 		t.Fatalf("a: %+v", e)
 	}
 	e, mid := exec(t, h, "b", "x + 2")
-	if e.Status != proto.StatusOK {
+	if e.Status != rlm.StatusOK {
 		t.Fatalf("b: %+v", e)
 	}
 	if r := testutil.FindResult(mid); r == nil || *r != "42" {
@@ -47,7 +45,7 @@ func TestGoStdlib(t *testing.T) {
 	h := goHarness(t)
 	e, mid := exec(t, h, "c", `import "strings"
 strings.ToUpper("abc")`)
-	if e.Status != proto.StatusOK {
+	if e.Status != rlm.StatusOK {
 		t.Fatalf("c: %+v", e)
 	}
 	if r := testutil.FindResult(mid); r == nil || *r != "ABC" {
@@ -78,7 +76,7 @@ wg.Wait()
 "3 calls"
 `
 	e, mid := exec(t, h, "fan", code)
-	if e.Status != proto.StatusOK {
+	if e.Status != rlm.StatusOK {
 		t.Fatalf("fan: %+v %+v", e, mid)
 	}
 }
@@ -97,9 +95,9 @@ rlm.Sleep(10000)`})
 		select {
 		case e := <-h.Events:
 			switch {
-			case e.Event == proto.KindError && e.EName == proto.EnameKeyboard:
+			case e.Event == rlm.KindError && e.EName == rlm.EnameKeyboard:
 				gotErr = true
-			case e.Event == proto.KindDone && e.ID != nil && *e.ID == "z" && e.Status == proto.StatusError:
+			case e.Event == rlm.KindDone && e.ID != nil && *e.ID == "z" && e.Status == rlm.StatusError:
 				gotDone = true
 			}
 		case <-deadline:
@@ -107,7 +105,7 @@ rlm.Sleep(10000)`})
 		}
 	}
 
-	if e, _ := exec(t, h, "ok", "1+1"); e.Status != proto.StatusOK {
+	if e, _ := exec(t, h, "ok", "1+1"); e.Status != rlm.StatusOK {
 		t.Fatalf("kernel did not keep serving: %+v", e)
 	}
 }
@@ -123,14 +121,14 @@ go func() {
 }()
 "spawned"
 `
-	if e, _ := exec(t, h, "bg", code); e.Status != proto.StatusOK {
+	if e, _ := exec(t, h, "bg", code); e.Status != rlm.StatusOK {
 		t.Fatalf("bg: %+v", e)
 	}
 	deadline := time.After(4 * time.Second)
 	for {
 		select {
 		case e := <-h.Events:
-			if e.Event == proto.KindStdout && e.ID != nil && *e.ID == "bg" &&
+			if e.Event == rlm.KindStdout && e.ID != nil && *e.ID == "bg" &&
 				strings.Contains(e.Text, "hello from the go future") {
 				return
 			}

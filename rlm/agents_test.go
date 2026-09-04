@@ -1,4 +1,4 @@
-package agents_test
+package rlm_test
 
 import (
 	"bufio"
@@ -10,16 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moreWax/go-prime-agent/internal/agents"
-	"github.com/moreWax/go-prime-agent/internal/hostbridge"
-	"github.com/moreWax/go-prime-agent/internal/proto"
+	rlm "github.com/moreWax/go-prime-agent/rlm"
 )
 
 // fakeHost reads host_request frames from the bridge's writer and resolves
 // them with canned logic.
 type fakeHost struct {
 	t       *testing.T
-	bridge  *hostbridge.Bridge
+	bridge  *rlm.Bridge
 	handler func(kind string, payload map[string]any) (json.RawMessage, error)
 }
 
@@ -27,7 +25,7 @@ func newFakeHost(t *testing.T, handler func(string, map[string]any) (json.RawMes
 	t.Helper()
 	pr, pw := io.Pipe()
 	fh := &fakeHost{t: t, handler: handler}
-	fh.bridge = hostbridge.New(proto.NewWriter(pw))
+	fh.bridge = rlm.NewBridge(rlm.NewWriter(pw))
 	go fh.serve(pr)
 	t.Cleanup(func() { pw.Close() })
 	return fh
@@ -36,8 +34,8 @@ func newFakeHost(t *testing.T, handler func(string, map[string]any) (json.RawMes
 func (f *fakeHost) serve(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
-		var e proto.Event
-		if err := json.Unmarshal(sc.Bytes(), &e); err != nil || e.Event != proto.KindHostRequest || e.ID == nil {
+		var e rlm.Event
+		if err := json.Unmarshal(sc.Bytes(), &e); err != nil || e.Event != rlm.KindHostRequest || e.ID == nil {
 			continue
 		}
 		var env struct {
@@ -45,7 +43,7 @@ func (f *fakeHost) serve(r io.Reader) {
 			Payload map[string]any `json:"payload"`
 		}
 		_ = json.Unmarshal(e.Data, &env)
-		reply := proto.Reply{Status: proto.StatusOK}
+		reply := rlm.Reply{Status: rlm.StatusOK}
 		if res, err := f.handler(env.Kind, env.Payload); err != nil {
 			reply.Status = "error"
 			reply.Error = err.Error()
@@ -74,10 +72,10 @@ func TestSpawnFanOut(t *testing.T) {
 			"model":        "test-model",
 		})
 	})
-	cl := agents.New(fh.bridge)
+	cl := rlm.NewClient(fh.bridge)
 
 	var wg sync.WaitGroup
-	children := make([]*agents.Child, 3)
+	children := make([]*rlm.Child, 3)
 	errs := make([]error, 3)
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
@@ -116,7 +114,7 @@ func TestSendAndList(t *testing.T) {
 		}
 		return nil, fmt.Errorf("unexpected kind %q", kind)
 	})
-	cl := agents.New(fh.bridge)
+	cl := rlm.NewClient(fh.bridge)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -142,7 +140,7 @@ func TestSpawnError(t *testing.T) {
 	fh := newFakeHost(t, func(kind string, payload map[string]any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("no capacity")
 	})
-	cl := agents.New(fh.bridge)
+	cl := rlm.NewClient(fh.bridge)
 	if _, err := cl.Spawn(context.Background(), "task", "w"); err == nil {
 		t.Fatal("expected error")
 	}

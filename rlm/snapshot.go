@@ -1,4 +1,4 @@
-package kernel
+package rlm
 
 import (
 	"encoding/json"
@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
-
-	"github.com/moreWax/go-prime-agent/internal/proto"
 )
 
 // Default snapshot limits (spec defaults mirrored from the Python runtime).
@@ -73,7 +71,7 @@ func planSnapshot(entries map[string]any, lim snapshotLimits) snapshotPlan {
 // manifest atomically, and only then applies pruning (spec: a manifest
 // failure means nothing is pruned). Interpreter state (Yaegi globals) is
 // mirrored as name markers and is not value-covered yet.
-func (k *Kernel) snapshot(req proto.Request) {
+func (k *Kernel) snapshot(req Request) {
 	lim := snapshotLimits{
 		maxVar:   defaultMaxVariableBytes,
 		maxTotal: defaultMaxTotalBytes,
@@ -101,7 +99,7 @@ func (k *Kernel) snapshot(req proto.Request) {
 		err = atomicWrite(req.ManifestPath, m)
 	}
 	if err != nil {
-		k.done(req.ID, proto.StatusError, &proto.DoneExtras{Reason: err.Error()})
+		k.done(req.ID, StatusError, &DoneExtras{Reason: err.Error()})
 		return
 	}
 	if lim.prune {
@@ -109,7 +107,7 @@ func (k *Kernel) snapshot(req proto.Request) {
 			k.scope.Delete(n)
 		}
 	}
-	k.done(req.ID, proto.StatusOK, &proto.DoneExtras{
+	k.done(req.ID, StatusOK, &DoneExtras{
 		Saved: plan.savedNames, Skipped: plan.skipped, Pruned: plan.pruned, Bytes: plan.bytes,
 	})
 }
@@ -117,16 +115,16 @@ func (k *Kernel) snapshot(req proto.Request) {
 // restore revives snapshot entries into the scope. A missing file is ok with
 // reason "snapshot not found"; a corrupt file fails with a reason (spec:
 // Snapshot / restore).
-func (k *Kernel) restore(req proto.Request) {
+func (k *Kernel) restore(req Request) {
 	b, err := os.ReadFile(req.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		k.done(req.ID, proto.StatusOK, &proto.DoneExtras{
+		k.done(req.ID, StatusOK, &DoneExtras{
 			Restored: []string{}, Failed: []string{}, Reason: "snapshot not found",
 		})
 		return
 	}
 	if err != nil {
-		k.done(req.ID, proto.StatusError, &proto.DoneExtras{Reason: err.Error()})
+		k.done(req.ID, StatusError, &DoneExtras{Reason: err.Error()})
 		return
 	}
 	var payload struct {
@@ -134,7 +132,7 @@ func (k *Kernel) restore(req proto.Request) {
 		Names   map[string]json.RawMessage `json:"names"`
 	}
 	if err := json.Unmarshal(b, &payload); err != nil {
-		k.done(req.ID, proto.StatusError, &proto.DoneExtras{Reason: "corrupt snapshot: " + err.Error()})
+		k.done(req.ID, StatusError, &DoneExtras{Reason: "corrupt snapshot: " + err.Error()})
 		return
 	}
 	var restored, failed []string
@@ -149,7 +147,7 @@ func (k *Kernel) restore(req proto.Request) {
 	}
 	sort.Strings(restored)
 	sort.Strings(failed)
-	k.done(req.ID, proto.StatusOK, &proto.DoneExtras{Restored: restored, Failed: failed})
+	k.done(req.ID, StatusOK, &DoneExtras{Restored: restored, Failed: failed})
 }
 
 // atomicWrite writes data to path via a temp file in the same directory and

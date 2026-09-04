@@ -11,7 +11,7 @@
 //   - sleep/host_call are context-aware: interrupting a cell cancels them.
 //     A pure-compute interpreted loop cannot be interrupted mid-eval (known
 //     Yaegi limitation); the mitigation is a kernel restart + restore.
-package goeval
+package rlm
 
 import (
 	"context"
@@ -25,11 +25,9 @@ import (
 
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
-
-	"github.com/moreWax/go-prime-agent/internal/eval"
 )
 
-type Evaluator struct {
+type GoEvaluator struct {
 	mu sync.Mutex
 	i  *interp.Interpreter
 
@@ -42,7 +40,7 @@ type Evaluator struct {
 // outWriter routes interpreted print/println to the current cell's
 // attributed stdout. Background goroutines printing after their cell ends
 // attribute to the most recent cell (attribution caveat, documented).
-type outWriter struct{ e *Evaluator }
+type outWriter struct{ e *GoEvaluator }
 
 func (w outWriter) Write(p []byte) (int, error) {
 	w.e.mu.Lock()
@@ -56,8 +54,8 @@ func (w outWriter) Write(p []byte) (int, error) {
 
 var _ io.Writer = outWriter{}
 
-func New() *Evaluator {
-	e := &Evaluator{ctx: context.Background()}
+func NewGoEvaluator() *GoEvaluator {
+	e := &GoEvaluator{ctx: context.Background()}
 	e.i = interp.New(interp.Options{Stdout: outWriter{e}})
 	e.i.Use(stdlib.Symbols)
 
@@ -90,20 +88,20 @@ func New() *Evaluator {
 	return e
 }
 
-func (e *Evaluator) slotCtx() context.Context {
+func (e *GoEvaluator) slotCtx() context.Context {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.ctx
 }
 
-func (e *Evaluator) slotHost() (context.Context, func(context.Context, string, any) (json.RawMessage, error)) {
+func (e *GoEvaluator) slotHost() (context.Context, func(context.Context, string, any) (json.RawMessage, error)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.ctx, e.host
 }
 
 // Run evaluates one cell in the persistent interpreter.
-func (e *Evaluator) Run(env eval.Env) (res eval.Result, err error) {
+func (e *GoEvaluator) Run(env Env) (res Result, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
@@ -133,14 +131,14 @@ func (e *Evaluator) Run(env eval.Env) (res eval.Result, err error) {
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return eval.Result{}, &eval.InterruptedError{CellID: env.CellID}
+			return Result{}, &InterruptedError{CellID: env.CellID}
 		}
-		return eval.Result{}, err
+		return Result{}, err
 	}
 	// A cancelled cell reports interrupted even if user code swallowed the
-	// cancellation as a value (e.g. trailing `rlm.Sleep(...)` expression).
+	// cancellation as a value (e.g. trailing `Sleep(...)` expression).
 	if cerr := env.Ctx.Err(); cerr != nil {
-		return eval.Result{}, &eval.InterruptedError{CellID: env.CellID}
+		return Result{}, &InterruptedError{CellID: env.CellID}
 	}
 	// Register declared names in the kernel scope so list_names and snapshot
 	// see Go globals. Values are markers: interpreter state is not serialized
@@ -150,8 +148,8 @@ func (e *Evaluator) Run(env eval.Env) (res eval.Result, err error) {
 	}
 	if v.IsValid() {
 		if iv := v.Interface(); iv != nil {
-			return eval.Result{Value: fmt.Sprintf("%v", iv)}, nil
+			return Result{Value: fmt.Sprintf("%v", iv)}, nil
 		}
 	}
-	return eval.Result{}, nil
+	return Result{}, nil
 }

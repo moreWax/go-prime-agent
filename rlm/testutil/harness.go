@@ -11,8 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moreWax/go-prime-agent/internal/kernel"
-	"github.com/moreWax/go-prime-agent/internal/proto"
+	rlm "github.com/moreWax/go-prime-agent/rlm"
 )
 
 // Harness wires a Kernel to a fake host over in-memory pipes and collects
@@ -20,8 +19,8 @@ import (
 type Harness struct {
 	T        *testing.T
 	ToKernel io.Writer
-	Events   chan proto.Event
-	HostReqs chan proto.Event // demuxed host_request frames
+	Events   chan rlm.Event
+	HostReqs chan rlm.Event // demuxed host_request frames
 
 	cancel   context.CancelFunc
 	closeEvt io.WriteCloser
@@ -31,26 +30,26 @@ type Harness struct {
 
 // NewHarness starts a Kernel over in-memory pipes. cfg may be nil or mutate
 // the config (e.g. inject an evaluator).
-func NewHarness(t *testing.T, cfg func(*kernel.Config)) *Harness {
+func NewHarness(t *testing.T, cfg func(*rlm.Config)) *Harness {
 	t.Helper()
 	kr, kw := io.Pipe()
 	er, ew := io.Pipe()
 
 	h := &Harness{
 		T: t, ToKernel: kw, closeEvt: ew,
-		Events:   make(chan proto.Event, 256),
-		HostReqs: make(chan proto.Event, 64),
+		Events:   make(chan rlm.Event, 256),
+		HostReqs: make(chan rlm.Event, 64),
 		done:     make(chan struct{}),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	t.Cleanup(h.Close)
 
-	conf := kernel.Config{In: kr, Out: ew}
+	conf := rlm.Config{In: kr, Out: ew}
 	if cfg != nil {
 		cfg(&conf)
 	}
-	k := kernel.New(conf)
+	k := rlm.New(conf)
 	h.wg.Add(1)
 	go func() { defer h.wg.Done(); k.Run(ctx) }()
 
@@ -60,9 +59,9 @@ func NewHarness(t *testing.T, cfg func(*kernel.Config)) *Harness {
 		sc := bufio.NewScanner(er)
 		sc.Buffer(make([]byte, 1<<20), 16<<20)
 		for sc.Scan() {
-			var e proto.Event
+			var e rlm.Event
 			if err := json.Unmarshal(sc.Bytes(), &e); err == nil {
-				if e.Event == proto.KindHostRequest {
+				if e.Event == rlm.KindHostRequest {
 					h.HostReqs <- e
 				} else {
 					h.Events <- e
@@ -91,7 +90,7 @@ func (h *Harness) SendReq(v any) {
 }
 
 // Await reads the next event or fails the test on timeout.
-func (h *Harness) Await(timeout time.Duration) proto.Event {
+func (h *Harness) Await(timeout time.Duration) rlm.Event {
 	h.T.Helper()
 	select {
 	case e, ok := <-h.Events:
@@ -101,20 +100,20 @@ func (h *Harness) Await(timeout time.Duration) proto.Event {
 		return e
 	case <-time.After(timeout):
 		h.T.Fatal("timed out waiting for event")
-		return proto.Event{}
+		return rlm.Event{}
 	}
 }
 
 // WantDone reads events until the done for id, returning it plus the
 // intervening events.
-func (h *Harness) WantDone(id string, timeout time.Duration) (proto.Event, []proto.Event) {
+func (h *Harness) WantDone(id string, timeout time.Duration) (rlm.Event, []rlm.Event) {
 	h.T.Helper()
-	var mid []proto.Event
+	var mid []rlm.Event
 	deadline := time.After(timeout)
 	for {
 		select {
 		case e := <-h.Events:
-			if e.Event == proto.KindDone && e.ID != nil && *e.ID == id {
+			if e.Event == rlm.KindDone && e.ID != nil && *e.ID == id {
 				return e, mid
 			}
 			mid = append(mid, e)
@@ -125,9 +124,9 @@ func (h *Harness) WantDone(id string, timeout time.Duration) (proto.Event, []pro
 }
 
 // FindResult returns the text of the first result event, if any.
-func FindResult(mid []proto.Event) *string {
+func FindResult(mid []rlm.Event) *string {
 	for _, m := range mid {
-		if m.Event == proto.KindResult {
+		if m.Event == rlm.KindResult {
 			s := m.Text
 			return &s
 		}
@@ -154,14 +153,14 @@ func (h *Harness) HostAutoReplier(fn func(kind string, payload any) (json.RawMes
 					Payload any    `json:"payload"`
 				}
 				_ = json.Unmarshal(e.Data, &env)
-				reply := proto.Reply{Status: proto.StatusOK}
+				reply := rlm.Reply{Status: rlm.StatusOK}
 				if res, err := fn(env.Kind, env.Payload); err != nil {
 					reply.Status = "error"
 					reply.Error = err.Error()
 				} else {
 					reply.Result = res
 				}
-				h.SendReq(proto.Request{Type: "host_reply", ID: *e.ID, Data: mustJSON(h.T, reply)})
+				h.SendReq(rlm.Request{Type: "host_reply", ID: *e.ID, Data: mustJSON(h.T, reply)})
 			}
 		}
 	}()

@@ -43,6 +43,26 @@ mutex it could wait on a channel for.
 | `sys.stdout` interception | attributed writer port passed to cells |
 | pre-imported Python skills | Go CLI skills (static binaries) + markdown skills |
 
+## Package shape: faithful port of prime-agent-runtime
+
+The Go runtime mirrors the Python runtime's flat `rlm` package
+(`prime-agent-runtime/src/rlm/`), file for file where a counterpart exists:
+
+| Python (`rlm/`)        | Go (`rlm/`)      | Contents |
+|---|---|---|
+| `repl.py`              | `repl.go`, `dispatch.go`, `executor.go`, `cell.go` | kernel lifecycle, reader routing + interrupt table, serial executor, cell→event mapping |
+| (protocol in `repl.py` + `repl.md`) | `frames.go` | v3 frame types, locked writer |
+| `harness.py`           | `harness.go` | host bridge (request/reply correlation) + typed subagent client |
+| —                      | `scope.go`, `snapshot.go` | namespace + snapshot/restore |
+| —                      | `eval.go`, `ops.go` | stub DSL evaluator (conformance tests) |
+| —                      | `goeval.go`, `chunk.go` | Yaegi Go evaluator + source chunker |
+| `test/test_repl.py`    | `rlm/testutil/` | pipe-backed fake host |
+| `python -m rlm.repl`   | `cmd/gorlm` | entrypoint binary |
+
+No `bash.go`: there is no bash tool by design (see below). `mcp.go` and
+`skill.go` will be added when those subsystems are ported, keeping the
+same names.
+
 ## Design decision: no bash tool
 
 The agent thinks and executes in Go. Cells are Go source run in a persistent

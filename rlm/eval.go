@@ -1,6 +1,6 @@
 // Package eval defines the cell-execution contract shared by the kernel and
 // every evaluator implementation.
-package eval
+package rlm
 
 import (
 	"context"

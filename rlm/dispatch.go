@@ -1,12 +1,10 @@
-package kernel
+package rlm
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
 	"sync"
-
-	"github.com/moreWax/go-prime-agent/internal/proto"
 )
 
 // readAll parses request lines until EOF. Malformed lines emit a
@@ -20,10 +18,10 @@ func (k *Kernel) readAll() {
 		if len(line) == 0 {
 			continue
 		}
-		var req proto.Request
+		var req Request
 		if err := json.Unmarshal(line, &req); err != nil {
-			k.events.Write(proto.Event{
-				Event: proto.KindError, EName: proto.EnameProtocol, EValue: err.Error(),
+			k.events.Write(Event{
+				Event: KindError, EName: EnameProtocol, EValue: err.Error(),
 				Traceback: []string{string(line)},
 			})
 			continue
@@ -34,18 +32,18 @@ func (k *Kernel) readAll() {
 
 // dispatch runs on the reader goroutine. interrupt and host_reply NEVER go
 // through the queue — they must reach a busy kernel instantly.
-func (k *Kernel) dispatch(req proto.Request) {
+func (k *Kernel) dispatch(req Request) {
 	switch req.Type {
 	case "interrupt":
 		k.table.interrupt(req.ID)
 	case "host_reply":
-		var r proto.Reply
+		var r Reply
 		if err := json.Unmarshal(req.Data, &r); err == nil {
 			k.bridge.Resolve(req.ID, r)
 		}
 	case "shutdown":
 		if req.ID != "" {
-			k.done(req.ID, proto.StatusOK, nil)
+			k.done(req.ID, StatusOK, nil)
 		}
 		k.beginShutdown()
 	default:
@@ -55,14 +53,14 @@ func (k *Kernel) dispatch(req proto.Request) {
 
 // enqueue registers a request's cancel func and queues it. After shutdown
 // begins, new requests are refused with an error done.
-func (k *Kernel) enqueue(req proto.Request) {
+func (k *Kernel) enqueue(req Request) {
 	select {
 	case <-k.drainCh:
-		k.events.Write(proto.Event{
-			Event: proto.KindError, ID: proto.IDPtr(req.ID),
-			EName: proto.EnameProtocol, EValue: "shutting down",
+		k.events.Write(Event{
+			Event: KindError, ID: IDPtr(req.ID),
+			EName: EnameProtocol, EValue: "shutting down",
 		})
-		k.done(req.ID, proto.StatusError, nil)
+		k.done(req.ID, StatusError, nil)
 		return
 	default:
 	}
@@ -150,6 +148,6 @@ func (t *requestTable) deactivate(id string) {
 }
 
 // done emits a done frame; extras may be nil.
-func (k *Kernel) done(id, status string, extras *proto.DoneExtras) {
-	k.events.Write(proto.DoneEvent(id, status, extras))
+func (k *Kernel) done(id, status string, extras *DoneExtras) {
+	k.events.Write(DoneEvent(id, status, extras))
 }

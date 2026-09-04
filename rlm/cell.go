@@ -1,12 +1,9 @@
-package kernel
+package rlm
 
 import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/moreWax/go-prime-agent/internal/eval"
-	"github.com/moreWax/go-prime-agent/internal/proto"
 )
 
 // pythonBootstrapMarks identify the stock host's Python bootstrap cell by
@@ -39,16 +36,16 @@ func (k *Kernel) runCell(w work) {
 	// The fork's host sends a Go bootstrap instead and this becomes dead.
 	if k.cfg.AckPythonBootstrap && looksLikePythonBootstrap(req.Code) {
 		k.attributedStdout(req.ID)("go kernel: python bootstrap acked (not evaluated)")
-		k.done(req.ID, proto.StatusOK, nil)
+		k.done(req.ID, StatusOK, nil)
 		return
 	}
-	env := eval.Env{
+	env := Env{
 		Ctx:     w.ctx,
 		RootCtx: k.rootCtx,
 		CellID:  req.ID,
 		Code:    req.Code,
 		Stdout:  k.attributedStdout(req.ID),
-		Host:    k.bridge, // *hostbridge.Bridge satisfies eval.Host
+		Host:    k.bridge, // *Bridge satisfies Host
 		Set:     k.scope.Set,
 		Get:     k.scope.Get,
 	}
@@ -57,24 +54,24 @@ func (k *Kernel) runCell(w work) {
 	switch {
 	case err == nil:
 		if res.Value != nil {
-			k.events.Write(proto.Event{
-				Event: proto.KindResult, ID: proto.IDPtr(req.ID),
+			k.events.Write(Event{
+				Event: KindResult, ID: IDPtr(req.ID),
 				Text: fmt.Sprintf("%v", res.Value),
 			})
 		}
-		k.done(req.ID, proto.StatusOK, nil)
+		k.done(req.ID, StatusOK, nil)
 	case isInterrupt(err):
-		k.events.Write(proto.Event{
-			Event: proto.KindError, ID: proto.IDPtr(req.ID),
-			EName: proto.EnameKeyboard, EValue: "cell interrupted",
+		k.events.Write(Event{
+			Event: KindError, ID: IDPtr(req.ID),
+			EName: EnameKeyboard, EValue: "cell interrupted",
 		})
-		k.done(req.ID, proto.StatusError, nil)
+		k.done(req.ID, StatusError, nil)
 	default:
-		k.events.Write(proto.Event{
-			Event: proto.KindError, ID: proto.IDPtr(req.ID),
-			EName: proto.EnameCellError, EValue: err.Error(),
+		k.events.Write(Event{
+			Event: KindError, ID: IDPtr(req.ID),
+			EName: EnameCellError, EValue: err.Error(),
 		})
-		k.done(req.ID, proto.StatusError, nil)
+		k.done(req.ID, StatusError, nil)
 	}
 }
 
@@ -85,11 +82,11 @@ func (k *Kernel) attributedStdout(id string) func(string) {
 		if !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
-		k.events.Write(proto.Event{Event: proto.KindStdout, ID: proto.IDPtr(id), Text: text})
+		k.events.Write(Event{Event: KindStdout, ID: IDPtr(id), Text: text})
 	}
 }
 
 func isInterrupt(err error) bool {
-	var ie *eval.InterruptedError
+	var ie *InterruptedError
 	return errors.As(err, &ie)
 }

@@ -1,7 +1,7 @@
 // Package proto implements the RLM runtime wire protocol (v3):
 // newline-delimited JSON, requests on stdin, events on stdout.
 // Spec: prime-agent-runtime/src/rlm/repl.md
-package proto
+package rlm
 
 import (
 	"encoding/json"

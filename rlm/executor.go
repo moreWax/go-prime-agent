@@ -1,10 +1,8 @@
-package kernel
+package rlm
 
 import (
 	"fmt"
 	"sort"
-
-	"github.com/moreWax/go-prime-agent/internal/proto"
 )
 
 // executor drains the work queue one request at a time (v3 policy). When
@@ -54,16 +52,16 @@ func (k *Kernel) runRequest(w work) {
 	case "list_names":
 		names := k.scope.Names()
 		sort.Strings(names)
-		k.done(req.ID, proto.StatusOK, &proto.DoneExtras{Names: names})
+		k.done(req.ID, StatusOK, &DoneExtras{Names: names})
 	case "snapshot":
 		k.snapshot(req)
 	case "restore":
 		k.restore(req)
 	default:
-		k.events.Write(proto.Event{
-			Event: proto.KindError, ID: proto.IDPtr(req.ID),
-			EName: proto.EnameProtocol, EValue: fmt.Sprintf("unknown request type %q", req.Type),
+		k.events.Write(Event{
+			Event: KindError, ID: IDPtr(req.ID),
+			EName: EnameProtocol, EValue: fmt.Sprintf("unknown request type %q", req.Type),
 		})
-		k.done(req.ID, proto.StatusError, nil)
+		k.done(req.ID, StatusError, nil)
 	}
 }

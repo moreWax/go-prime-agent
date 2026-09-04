@@ -1,4 +1,4 @@
-package goeval
+package rlm
 
 import (
 	"regexp"

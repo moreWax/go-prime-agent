@@ -12,7 +12,7 @@
 //     target becomes active (spec: Interrupt).
 //   - goroutines spawned by a cell outlive it and keep writing attributed
 //     stdout events; a root context governs their lifetime.
-package kernel
+package rlm
 
 import (
 	"context"
@@ -20,22 +20,18 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
-	"github.com/moreWax/go-prime-agent/internal/eval"
-	"github.com/moreWax/go-prime-agent/internal/hostbridge"
-	"github.com/moreWax/go-prime-agent/internal/proto"
 )
 
 // Evaluator executes one cell. The kernel owns scheduling, contexts, and the
 // protocol; the evaluator owns language. Two implementations ship: the op-DSL
 // stub (protocol conformance tests) and the Yaegi Go evaluator.
 type Evaluator interface {
-	Run(eval.Env) (eval.Result, error)
+	Run(Env) (Result, error)
 }
 
-type evalFn func(eval.Env) (eval.Result, error)
+type evalFn func(Env) (Result, error)
 
-func (f evalFn) Run(env eval.Env) (eval.Result, error) { return f(env) }
+func (f evalFn) Run(env Env) (Result, error) { return f(env) }
 
 type Config struct {
 	In  io.Reader
@@ -49,15 +45,15 @@ type Config struct {
 }
 
 type work struct {
-	req proto.Request
+	req Request
 	ctx context.Context
 }
 
 type Kernel struct {
 	cfg    Config
-	events *proto.Writer
+	events *Writer
 	scope  *Scope
-	bridge *hostbridge.Bridge
+	bridge *Bridge
 
 	rootCtx context.Context
 	stop    context.CancelFunc
@@ -74,11 +70,11 @@ type Kernel struct {
 func New(cfg Config) *Kernel {
 	ctx, stop := context.WithCancel(context.Background())
 	if cfg.Eval == nil {
-		cfg.Eval = evalFn(eval.Run)
+		cfg.Eval = evalFn(Run)
 	}
 	k := &Kernel{
 		cfg:      cfg,
-		events:   proto.NewWriter(cfg.Out),
+		events:   NewWriter(cfg.Out),
 		scope:    NewScope(),
 		queue:    make(chan work, 1024),
 		drainCh:  make(chan struct{}),
@@ -87,15 +83,15 @@ func New(cfg Config) *Kernel {
 		stop:     stop,
 		table:    newRequestTable(),
 	}
-	k.bridge = hostbridge.New(k.events)
+	k.bridge = NewBridge(k.events)
 	return k
 }
 
 // Run serves until shutdown, stdin EOF, or ctx cancellation. Always emits
 // the ready handshake first.
 func (k *Kernel) Run(ctx context.Context) error {
-	if err := k.events.Write(proto.Event{
-		Event: proto.KindReady, Protocol: proto.ProtocolVersion, Runtime: runtime.Version(),
+	if err := k.events.Write(Event{
+		Event: KindReady, Protocol: ProtocolVersion, Runtime: runtime.Version(),
 	}); err != nil {
 		return err
 	}

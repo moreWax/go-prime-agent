@@ -6,21 +6,19 @@
 // conversation as ordinary agent-message prompts, not as kernel frames. A
 // forked host can add a `deliver` request kind to route child messages into
 // this process; the Child handle is the natural attachment point.
-package agents
+package rlm
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"github.com/moreWax/go-prime-agent/internal/hostbridge"
 )
 
 type Client struct {
-	b *hostbridge.Bridge
+	b *Bridge
 }
 
-func New(b *hostbridge.Bridge) *Client { return &Client{b: b} }
+func NewClient(b *Bridge) *Client { return &Client{b: b} }
 
 // Child is a spawned subagent handle. Field names mirror what the host
 // returns for spawn_task; confirm against agent-session.js when wiring the
