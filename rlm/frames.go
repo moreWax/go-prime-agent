@@ -111,6 +111,14 @@ func HostRequestEvent(id, kind string, payload any) (Event, error) {
 
 func (e Event) Valid() bool { return eventKinds[e.Event] }
 
+// IDString returns the frame id ("" when unattributed).
+func (e Event) IDString() string {
+	if e.ID == nil {
+		return ""
+	}
+	return *e.ID
+}
+
 func IDPtr(s string) *string { return &s }
 
 // Writer serializes event frames through a single writer goroutine that

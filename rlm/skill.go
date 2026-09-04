@@ -10,7 +10,6 @@ package rlm
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,5 +74,3 @@ func skillImports(skills []SkillInfo) []string {
 	}
 	return out
 }
-
-var _ io.Reader = (io.Reader)(nil)

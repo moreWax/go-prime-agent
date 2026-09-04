@@ -52,6 +52,25 @@ PRIME_AGENT_KERNEL_CMD='["/path/to/bin/gorlm"]' \
 PRIME_AGENT_KERNEL_BOOTSTRAP=none prime-agent
 ```
 
+## Go harness (headless)
+
+`goprime` is the non-UI Prime Agent host in Go, built on
+[go-pi](https://github.com/earendil-works/go-pi). It runs gorlm in-process
+(no subprocess), owns the model loop, exposes the `go` tool, loads Go
+skills, and services the subagent/message host bridge.
+
+```sh
+make build
+PI_CODING_AGENT_DIR=~/.prime/agent bin/goprime \
+  -p "Compute F(15) using code execution" \
+  --provider glm --model glm-5.2 --cwd "$PWD"
+```
+
+The TUI stays in the TypeScript fork for now. The headless host covers the
+non-UI execution path: provider registry (go-pi), agent loop (go-pi),
+Prime prompt/skills (this repo), persistent Go kernel (this repo),
+subagent admission/message bridge, and context cancellation.
+
 ## Cell language
 
 - Go source; state persists across cells (`x := 40` then `x + 2` → `42`)
